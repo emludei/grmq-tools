@@ -344,11 +344,15 @@ func NewRMQConsumer(config *RMQConsumerConfig) *RMQConsumer {
 	workerPoolMutex := make(chan struct{}, config.WorkerPoolSize)
 	// (Mutex)
 	reconnectMutex := make(chan struct{}, 1)
+
+	workerWaitGroup := sync.WaitGroup{}
+
 	consumer := &RMQConsumer{
 		config:          config,
 		errorChannel:    errChannel,
 		workerPoolMutex: workerPoolMutex,
 		reconnectMutex:  reconnectMutex,
+		workerWaitGroup: &workerWaitGroup,
 	}
 	return consumer
 }

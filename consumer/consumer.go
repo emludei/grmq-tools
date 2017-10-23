@@ -224,7 +224,12 @@ func (c *RMQConsumer) Consume() {
 }
 
 func (c *RMQConsumer) processDelivery(delivery amqp.Delivery) {
+	c.workerWaitGroup.Add(1)
+
 	defer func() {
+		c.workerWaitGroup.Done()
+
+		// release mutex
 		<-c.workerPoolMutex
 	}()
 

@@ -1,0 +1,13 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "LABAG6dyYKeWXmRCXwU6Vic2WwU=",
+			"path": "github.com/streadway/amqp",
+			"revision": "dfe15e36048539f4cda41f240b27a5ca25b9cd46",
+			"revisionTime": "2017-05-21T21:24:53Z"
+		}
+	],
+	"rootPath": "github.com/emludei/grmq-tools"
+}

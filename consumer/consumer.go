@@ -250,14 +250,15 @@ func (c *RMQConsumer) reconnect() {
 				// try to reconnect again
 				continue
 			}
+
+			// connection successfully established
+			return
+
 		default:
 			// Some goroutine already try to reconnect, wait reconnection timeout and return (try pass data,
 			// through connection again, may be in other goroutine connection successfully established).
-			break
+			return
 		}
-
-		// connection successfully established
-		break
 	}
 }
 

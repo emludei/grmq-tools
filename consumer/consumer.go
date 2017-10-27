@@ -2,10 +2,10 @@ package consumer
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/streadway/amqp"
-	"sync"
 )
 
 // TODO: write detailed comments, test, fix bugs
@@ -28,7 +28,7 @@ type RMQConsumer struct {
 	deliveryChannel <-chan amqp.Delivery
 
 	// messages must be Ack or Nack here.
-	processMessageCallback func(delivery amqp.Delivery)
+	processMessageCallback func(*RMQConsumer, amqp.Delivery)
 
 	// channels for event listeners (connection)
 	connCloseChannel     chan *amqp.Error
@@ -233,20 +233,16 @@ func (c *RMQConsumer) processDelivery(delivery amqp.Delivery) {
 		<-c.workerPoolMutex
 	}()
 
-	c.processMessageCallback(delivery)
+	c.processMessageCallback(c, delivery)
 }
 
 func (c *RMQConsumer) reconnect() {
-	for {
-		time.Sleep(c.config.ReconnectTimeout)
+	select {
+	case c.reconnectMutex <- struct{}{}:
+		for {
+			time.Sleep(c.config.ReconnectTimeout)
 
-		select {
-		case c.reconnectMutex <- struct{}{}:
 			err := c.InitConsumer()
-
-			// (Mutex) release mutex
-			<-c.reconnectMutex
-
 			if err != nil {
 				errString := "RMQConsumer.reconnect() initialize connections: %v"
 				errMessage := fmt.Errorf(errString, err)
@@ -256,14 +252,17 @@ func (c *RMQConsumer) reconnect() {
 				continue
 			}
 
-			// connection successfully established
-			return
-
-		default:
-			// Some goroutine already try to reconnect, wait reconnection timeout and return (try pass data,
-			// through connection again, may be in other goroutine connection successfully established).
+			// Connection successfully established.
+			// (Mutex) release mutex.
+			<-c.reconnectMutex
 			return
 		}
+
+	default:
+		// Some goroutine already try to reconnect, wait reconnection timeout and return (try pass data,
+		// through connection again, may be in other goroutine connection successfully established).
+		time.Sleep(c.config.ReconnectTimeout)
+		return
 	}
 }
 
@@ -342,7 +341,7 @@ func (c *RMQConsumer) Close() {
 }
 
 // Creates new RabbitMQ consumer
-func NewRMQConsumer(config *RMQConsumerConfig) *RMQConsumer {
+func NewRMQConsumer(config *RMQConsumerConfig, processMessageCallback func(*RMQConsumer, amqp.Delivery)) *RMQConsumer {
 	// All errors will be post to this channel. Developer must write goroutine for logging errors from this channel.
 	errChannel := make(chan error, config.ErrChannelBufferSize)
 	// (Mutex)
@@ -353,11 +352,12 @@ func NewRMQConsumer(config *RMQConsumerConfig) *RMQConsumer {
 	workerWaitGroup := sync.WaitGroup{}
 
 	consumer := &RMQConsumer{
-		config:          config,
-		errorChannel:    errChannel,
-		workerPoolMutex: workerPoolMutex,
-		reconnectMutex:  reconnectMutex,
-		workerWaitGroup: &workerWaitGroup,
+		config:                 config,
+		errorChannel:           errChannel,
+		processMessageCallback: processMessageCallback,
+		workerPoolMutex:        workerPoolMutex,
+		reconnectMutex:         reconnectMutex,
+		workerWaitGroup:        &workerWaitGroup,
 	}
 	return consumer
 }

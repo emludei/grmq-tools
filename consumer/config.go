@@ -22,16 +22,15 @@ type RMQConsumerConfig struct {
 	PrefetchGlobal bool
 
 	// Consume queue config
-	Queue       string
-	ConsumerTag string
-	AutoAck     bool
-	Exclusive   bool
-	NoLocal     bool
-	NoWait      bool
+	Queue     string
+	AutoAck   bool
+	Exclusive bool
+	NoLocal   bool
+	NoWait    bool
 }
 
 func NewConsumerConfig(name string, reconnectTimeout time.Duration, errChannelBufferSize, workerPoolSize int,
-	uri string, prefetchCount, prefetchSize int, prefetchGlobal bool, queue, consumerTag string, autoAck, exclusive,
+	uri string, prefetchCount, prefetchSize int, prefetchGlobal bool, queue string, autoAck, exclusive,
 	noLocal, noWait bool) *RMQConsumerConfig {
 
 	config := &RMQConsumerConfig{
@@ -44,7 +43,6 @@ func NewConsumerConfig(name string, reconnectTimeout time.Duration, errChannelBu
 		PrefetchSize:         prefetchSize,
 		PrefetchGlobal:       prefetchGlobal,
 		Queue:                queue,
-		ConsumerTag:          consumerTag,
 		AutoAck:              autoAck,
 		Exclusive:            exclusive,
 		NoLocal:              noLocal,

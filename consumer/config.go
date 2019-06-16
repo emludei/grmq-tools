@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-type RMQConsumerConfig struct {
+type Config struct {
 	// String representation of consumer in consumers section of queue page in rmq ui
 	Name                 string
 	ReconnectTimeout     time.Duration
@@ -29,24 +29,6 @@ type RMQConsumerConfig struct {
 	NoWait    bool
 }
 
-func NewConsumerConfig(name string, reconnectTimeout time.Duration, errChannelBufferSize, workerPoolSize int,
-	uri string, prefetchCount, prefetchSize int, prefetchGlobal bool, queue string, autoAck, exclusive,
-	noLocal, noWait bool) *RMQConsumerConfig {
-
-	config := &RMQConsumerConfig{
-		Name:                 name,
-		ReconnectTimeout:     reconnectTimeout,
-		ErrChannelBufferSize: errChannelBufferSize,
-		WorkerPoolSize:       workerPoolSize,
-		URI:                  uri,
-		PrefetchCount:        prefetchCount,
-		PrefetchSize:         prefetchSize,
-		PrefetchGlobal:       prefetchGlobal,
-		Queue:                queue,
-		AutoAck:              autoAck,
-		Exclusive:            exclusive,
-		NoLocal:              noLocal,
-		NoWait:               noWait,
-	}
-	return config
+func (c Config) Validate() error {
+	return nil
 }

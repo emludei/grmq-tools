@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 )
 
 // TODO: write detailed comments, test, fix bugs
+
+const (
+	consumerIdleTimeout = 60 * time.Second
+)
 
 // Consumer universal consumer with reconnects on broke connection.
 type Consumer struct {
@@ -30,7 +35,6 @@ type Consumer struct {
 	fatalChannel chan struct{}
 
 	// Mutexes
-	// (Mutex)
 	reconnectMutex chan struct{}
 
 	// connection fields
@@ -46,8 +50,6 @@ type Consumer struct {
 
 	chanCloseChannel chan *amqp.Error
 
-	// workers sync
-	// notify of call Consumer.Close method
 	wg sync.WaitGroup
 
 	ctx        context.Context
@@ -73,14 +75,30 @@ func (c *Consumer) Start() error {
 
 	c.ctx, c.cancelFunc = context.WithCancel(context.Background())
 
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Start() start listening of connection close events")
+	}
+
 	c.wg.Add(1)
 	go c.listenConnCloseChannel()
+
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Start() start listening of channel cancel events")
+	}
 
 	c.wg.Add(1)
 	go c.listenChanCancelChannel()
 
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Start() start listening of channel close events")
+	}
+
 	c.wg.Add(1)
 	go c.listenChanCloseChannel()
+
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Start() start consuming")
+	}
 
 	c.wg.Add(1)
 	go c.consume()
@@ -107,33 +125,33 @@ func (c *Consumer) Stop() error {
 		return fmt.Errorf("Consumer.Stop() cancel func is nil")
 	}
 
-	if c.logLevel >= log.LogLevelInfo {
-		c.logger.Log(log.LogLevelInfo, "Consumer.Stop() execute cancel func")
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Stop() execute cancel func")
 	}
 
 	c.cancelFunc()
 
-	if c.logLevel >= log.LogLevelInfo {
-		c.logger.Log(log.LogLevelInfo, "Consumer.Stop() wait for stopping of all goroutines")
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Stop() wait for stopping of all goroutines")
 	}
 
 	c.wg.Wait()
 	c.isStarted = false
 
-	if c.logLevel >= log.LogLevelInfo {
-		c.logger.Log(log.LogLevelInfo, "Consumer.Stop() start cleaning of public delivery channel")
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Stop() start cleaning of public delivery channel")
 	}
 
 	c.cleanPublicDeliveryChannel()
 
-	if c.logLevel >= log.LogLevelInfo {
-		c.logger.Log(log.LogLevelInfo, "Consumer.Stop() trigger invalidation signal")
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Stop() trigger invalidation signal")
 	}
 
 	c.triggerInvalidation()
 
-	if c.logLevel >= log.LogLevelInfo {
-		c.logger.Log(log.LogLevelInfo, "Consumer.Stop() close channel and connection to RabbitMQ")
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.Stop() close channel and connection to RabbitMQ")
 	}
 
 	err := c.channel.Close()
@@ -146,6 +164,10 @@ func (c *Consumer) Stop() error {
 	if err != nil && c.logLevel >= log.LogLevelError {
 		msg := fmt.Sprintf("Consumer.Stop() close connection to RabbitMQ error: %v", err)
 		c.logger.Log(log.LogLevelError, msg)
+	}
+
+	if c.logLevel >= log.LogLevelInfo {
+		c.logger.Log(log.LogLevelInfo, "Consumer.Stop() consumer has successfully stopped")
 	}
 
 	return nil
@@ -166,7 +188,10 @@ func (c *Consumer) FatalChannel() <-chan struct{} {
 func (c *Consumer) consume() {
 	defer func() {
 		if r := recover(); r != nil {
-			// TODO: logging
+			if c.logLevel >= log.LogLevelError {
+				msg := fmt.Sprintf("Consumer.consume() panic: (%v), at: [[\n%s\n]]\n", r, debug.Stack())
+				c.logger.Log(log.LogLevelError, msg)
+			}
 
 			c.triggerFatal()
 		}
@@ -174,25 +199,47 @@ func (c *Consumer) consume() {
 		c.wg.Done()
 	}()
 
+	if c.logLevel >= log.LogLevelDebug {
+		c.logger.Log(log.LogLevelDebug, "Consumer.consume() consuming has started")
+	}
+
 	done := c.ctx.Done()
 
 	for {
 		select {
 		case <-done:
+			if c.logLevel >= log.LogLevelDebug {
+				c.logger.Log(log.LogLevelDebug, "Consumer.consume() cancel consuming via context")
+			}
 			return
 		case delivery, ok := <-c.deliveryChannel:
 			if !ok {
+				if c.logLevel >= log.LogLevelError {
+					msg := "Consumer.consume() delivery channel was unexpectedly closed, start reconnecting"
+					c.logger.Log(log.LogLevelError, msg)
+				}
+
 				go c.reconnect()
 				return
 			}
 
 			select {
 			case <-done:
+				if c.logLevel >= log.LogLevelDebug {
+					c.logger.Log(log.LogLevelDebug, "Consumer.consume() cancel consuming via context")
+				}
 				return
 			case c.pubDeliveryChannel <- delivery:
+				if c.logLevel >= log.LogLevelDebug {
+					c.logger.Log(log.LogLevelDebug, "Consumer.consume() publish delivery to public channel")
+				}
 			}
-		case <-time.After(60 * time.Second):
-			// TODO: logging, timeout to constant
+		case <-time.After(consumerIdleTimeout):
+			if c.logLevel >= log.LogLevelInfo {
+				msg := "Consumer.consume() during %s has not processed any messages, start reconnecting"
+				c.logger.Log(log.LogLevelInfo, msg)
+			}
+
 			go c.reconnect()
 			return
 		}
@@ -202,21 +249,36 @@ func (c *Consumer) consume() {
 func (c *Consumer) reconnect() {
 	select {
 	case c.reconnectMutex <- struct{}{}:
+		if c.logLevel >= log.LogLevelDebug {
+			c.logger.Log(log.LogLevelDebug, "Consumer.reconnect() reconnecting has started")
+		}
+
 		for {
 			time.Sleep(c.config.ReconnectTimeout)
 
+			if c.logLevel >= log.LogLevelDebug {
+				c.logger.Log(log.LogLevelDebug, "Consumer.reconnect() try to reconnect")
+			}
+
 			err := c.Stop()
-			if err != nil {
-				// TODO: log it
+			if err != nil && c.logLevel >= log.LogLevelError {
+				msg := fmt.Sprintf("Consumer.reconnect() stop consuming error: %v", err)
+				c.logger.Log(log.LogLevelError, msg)
 			}
 
 			err = c.Start()
 			if err != nil {
-				errMessage := fmt.Errorf("Consumer.reconnect() start consuming error: %v", err)
-				// TODO: log error
+				if c.logLevel >= log.LogLevelError {
+					msg := fmt.Sprintf("Consumer.reconnect() start consuming error: %v", err)
+					c.logger.Log(log.LogLevelError, msg)
+				}
 
 				// try to reconnect again
 				continue
+			}
+
+			if c.logLevel >= log.LogLevelDebug {
+				c.logger.Log(log.LogLevelDebug, "Consumer.reconnect() connection has successfully established")
 			}
 
 			// Connection successfully established.
@@ -227,6 +289,9 @@ func (c *Consumer) reconnect() {
 
 	default:
 		// Some goroutine is already trying to reconnect
+		if c.logLevel >= log.LogLevelDebug {
+			c.logger.Log(log.LogLevelDebug, "Consumer.reconnect() some goroutine is already trying to reconnect")
+		}
 		return
 	}
 }
@@ -235,12 +300,19 @@ func (c *Consumer) cleanPublicDeliveryChannel() {
 	for len(c.pubDeliveryChannel) > 0 {
 		_, ok := <-c.pubDeliveryChannel
 		if !ok {
-			// TODO log error
+			if c.logLevel >= log.LogLevelError {
+				msg := "Consumer.cleanPublicDeliveryChannel() public delivery channel has unexpectedly closed"
+				c.logger.Log(log.LogLevelError, msg)
+			}
+
 			return
 		}
 	}
 
-	// TODO: log info
+	if c.logLevel >= log.LogLevelDebug {
+		msg := "Consumer.cleanPublicDeliveryChannel() public delivery channel has cleaned"
+		c.logger.Log(log.LogLevelDebug, msg)
+	}
 }
 
 func (c *Consumer) listenConnCloseChannel() {
@@ -249,26 +321,30 @@ func (c *Consumer) listenConnCloseChannel() {
 	for {
 		select {
 		case err, ok := <-c.connCloseChannel:
-			// this can`t happen, but just in case
 			if !ok {
-				errString := "Consumer.listenConnCloseChannel() Consumer.connCloseChannel channel closed"
-				errMessage := fmt.Errorf(errString)
+				if c.logLevel >= log.LogLevelError {
+					msg := "Consumer.listenConnCloseChannel() Consumer.connCloseChannel " +
+						"channel has closed unexpectedly, start restarting"
+					c.logger.Log(log.LogLevelError, msg)
+				}
 
-				// TODO: Log
 				go c.reconnect()
 				return
 			}
 
-			errString := "Consumer.listenConnCloseChannel() connection closed: %v"
-			errMessage := fmt.Errorf(errString, err)
-
-			// TODO: log
+			if c.logLevel >= log.LogLevelError {
+				msg := fmt.Sprintf("Consumer.listenConnCloseChannel() connection closed error: %v", err)
+				c.logger.Log(log.LogLevelError, msg)
+			}
 
 			go c.reconnect()
 			return
 
 		case <-c.ctx.Done():
-			// Received exit event, return
+			if c.logLevel >= log.LogLevelDebug {
+				c.logger.Log(log.LogLevelDebug, "Consumer.listenConnCloseChannel() cancel via context")
+			}
+
 			return
 		}
 	}
@@ -280,27 +356,32 @@ func (c *Consumer) listenChanCancelChannel() {
 	for {
 		select {
 		case tag, ok := <-c.chanCancelChannel:
-			// this can`t happen, but just in case
 			if !ok {
-				errString := "Consumer.listenChanCancelChannel() Consumer.chanCancelChannel channel closed"
-				errMessage := fmt.Errorf(errString)
-
-				// TODO: log
+				if c.logLevel >= log.LogLevelError {
+					msg := "Consumer.listenChanCancelChannel() Consumer.chanCancelChannel " +
+						"channel has closed unexpectedly, start restarting"
+					c.logger.Log(log.LogLevelError, msg)
+				}
 
 				go c.reconnect()
 				return
 			}
 
-			errString := "Consumer.listenChanCancelChannel() consume queue canceled: subscription tag %s"
-			errMessage := fmt.Errorf(errString, tag)
-
-			// TODO: log
+			if c.logLevel >= log.LogLevelError {
+				msg := fmt.Sprintf(
+					"Consumer.listenChanCancelChannel() consuming has canceled: subscription tag %s",
+					tag)
+				c.logger.Log(log.LogLevelError, msg)
+			}
 
 			go c.reconnect()
 			return
 
 		case <-c.ctx.Done():
-			// Received exit event, return
+			if c.logLevel >= log.LogLevelDebug {
+				c.logger.Log(log.LogLevelDebug, "Consumer.listenChanCancelChannel() cancel via context")
+			}
+
 			return
 		}
 	}
@@ -312,27 +393,30 @@ func (c *Consumer) listenChanCloseChannel() {
 	for {
 		select {
 		case err, ok := <-c.chanCloseChannel:
-			// this can`t happen, but just in case
 			if !ok {
-				errString := "Consumer.listenConnCloseChannel() Consumer.chanCloseChannel channel closed"
-				errMessage := fmt.Errorf(errString)
-
-				// TODO: log
+				if c.logLevel >= log.LogLevelError {
+					msg := "Consumer.listenChanCloseChannel() Consumer.chanCloseChannel " +
+						"channel has closed unexpectedly, start restarting"
+					c.logger.Log(log.LogLevelError, msg)
+				}
 
 				go c.reconnect()
 				return
 			}
 
-			errString := "Consumer.listenConnCloseChannel() channel closed: %v"
-			errMessage := fmt.Errorf(errString, err)
-
-			// TODO: log
+			if c.logLevel >= log.LogLevelError {
+				msg := fmt.Sprintf("Consumer.listenConnCloseChannel() channel closed error: %v", err)
+				c.logger.Log(log.LogLevelError, msg)
+			}
 
 			go c.reconnect()
 			return
 
 		case <-c.ctx.Done():
-			// Received exit event, return
+			if c.logLevel >= log.LogLevelDebug {
+				c.logger.Log(log.LogLevelDebug, "Consumer.listenConnCloseChannel() cancel via context")
+			}
+
 			return
 		}
 	}
